@@ -1138,7 +1138,7 @@ int main(int argc, char** argv) {
     bool no_create_vmu = false;
     // --screenshot-presented: capture what reached the screen rather than the game's own
     // pixels. For looking at the display path -- overlays, letterboxing, the resolve.
-    bool shot_presented = false;
+    [[maybe_unused]] bool shot_presented = false;
 #ifdef DREAM_WITH_RENDERER
     // --present-mode: vsync paces the run to the panel, which is right for playing and wrong for
     // measuring. Nothing about the guest changes either way.
@@ -1147,7 +1147,7 @@ int main(int argc, char** argv) {
     // --bindings FILE: where the controller layout is read from and written back to. Unset means
     // the host's per-user settings directory, so one layout follows the player across every title.
     std::string bindings_file;
-    bool bindings_file_set = false;
+    [[maybe_unused]] bool bindings_file_set = false;
     std::string flash_dump;           // --dump-flash FILE: write the flash out at the stop, so a
                                       // synthesised one can be compared against a reference.
     std::string flash_image;          // --flash FILE: a 128 KB console flash image. The runtime
@@ -1175,10 +1175,10 @@ int main(int argc, char** argv) {
     bool window_mode = false, validation = false, unthrottled = false, writeback = false;
     // --fps: start with the on-screen counter showing. F10 toggles it either way; this only
     // decides where it starts, so a run nobody is sitting at still records the figure.
-    bool start_with_fps = false;
+    [[maybe_unused]] bool start_with_fps = false;
     // --suggest-config FILE: the TOML this run earned, ready to paste into the game's config.
     std::string suggest_config;
-    std::uint64_t screenshot_at = 0, capture_at = 0;
+    [[maybe_unused]] std::uint64_t screenshot_at = 0, capture_at = 0;
     unsigned scale = 1;
     // --rtc-seed N: a fixed console clock, so two runs of the same build do the same thing and can
     // be compared. Any non-zero value will do; the number itself only changes the date a title
@@ -1234,6 +1234,7 @@ int main(int argc, char** argv) {
             no_create_vmu = true;
         else if (!std::strcmp(argv[i], "--screenshot-presented"))
             shot_presented = true;
+#ifdef DREAM_WITH_RENDERER
         else if (!std::strcmp(argv[i], "--present-mode") && i + 1 < argc) {
             const char* m = argv[++i];
             using PM = dream::render::vk::Window::PresentMode;
@@ -1247,6 +1248,10 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "unknown present mode %s: vsync, mailbox or immediate\n", m);
                 return 2;
             }
+#else
+        else if (!std::strcmp(argv[i], "--present-mode") && i + 1 < argc) {
+            ++i;  // no renderer in this build: nothing to present
+#endif
         } else if (!std::strcmp(argv[i], "--bindings") && i + 1 < argc) {
             bindings_file = argv[++i];
             bindings_file_set = true;

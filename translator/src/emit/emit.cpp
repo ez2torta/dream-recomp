@@ -1032,7 +1032,9 @@ private:
                 break;
         }
         out << "    }\n";
-        if (slot_labels_.count(pc + 2)) {
+        if (slot_labels_.count(pc + 2) && !blocks_.count(pc + 2)) {
+            // (When discovery also made the slot a block of its own, that block carries the label
+            // and the fall-through; a second copy here would define the label twice.)
             // Another branch targets this slot: entering here executes the slot instruction as an
             // ordinary instruction and falls through to pc+4. The not-taken path of the owning
             // branch skips this copy.
