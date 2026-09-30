@@ -1097,6 +1097,9 @@ void usage(const char* argv0, std::FILE* out) {
         "\n"
         "Reproducing a run:\n"
         "  --rtc-seed N           fix the console clock so two runs do the same thing\n"
+        "  --record-input FILE    write every change of the pad to FILE, one line per change, so a\n"
+        "                         session played by hand can be repeated exactly\n"
+        "  --play-input FILE      replay a recording. Use the same --rtc-seed as when it was made\n"
         "  --press B@F[,B@F...]   hold a button for 8 frames from frame F (a b c x y z start\n"
         "                         up down left right), to get past screens that wait for input\n"
         "\n"
@@ -1181,6 +1184,7 @@ int main(int argc, char** argv) {
     // frame, so a headless run can get past "press start" screens. Names: a b c x y z start up
     // down left right.
     std::string presses;
+    std::string record_input, play_input;
     // --window: open a window and play. Without it the run is headless exactly as before.
     // --scale N draws the geometry at N times the guest's resolution; the frame is resampled back
     // into the guest's framebuffer, so the guest never learns its screen changed size.
@@ -1279,6 +1283,10 @@ int main(int argc, char** argv) {
             dump_ta_at_frame = std::strtoull(argv[++i], nullptr, 0);
         else if (!std::strcmp(argv[i], "--press") && i + 1 < argc)
             presses = argv[++i];
+        else if (!std::strcmp(argv[i], "--record-input") && i + 1 < argc)
+            record_input = argv[++i];
+        else if (!std::strcmp(argv[i], "--play-input") && i + 1 < argc)
+            play_input = argv[++i];
         else if (!std::strcmp(argv[i], "--max-seconds") && i + 1 < argc)
             max_seconds = std::strtoull(argv[++i], nullptr, 0);
         else if (!std::strcmp(argv[i], "--window"))
@@ -1590,6 +1598,53 @@ int main(int argc, char** argv) {
                     scripted.push_back({frame, n.bit});
         }
     }
+    // --play-input: the recording, one line per change of the pad: frame buttons rt lt jx jy j2x j2y.
+    struct InputEvent {
+        std::uint64_t frame;
+        dream::maple::ControllerState state;
+    };
+    std::vector<InputEvent> played;
+    std::size_t played_at = 0;
+    if (!play_input.empty()) {
+        std::ifstream inp(play_input);
+        if (!inp) {
+            std::fprintf(stderr, "--play-input: cannot read %s\n", play_input.c_str());
+            return 2;
+        }
+        std::string line;
+        while (std::getline(inp, line)) {
+            if (line.empty() || line[0] == '#')
+                continue;
+            unsigned long long fr = 0;
+            unsigned b = 0, rt = 0, lt = 0, jx = 0, jy = 0, j2x = 0, j2y = 0;
+            if (std::sscanf(line.c_str(), "%llu %x %u %u %u %u %u %u", &fr, &b, &rt, &lt, &jx, &jy,
+                            &j2x, &j2y) < 2)
+                continue;
+            dream::maple::ControllerState st;
+            st.buttons = static_cast<std::uint16_t>(b);
+            st.rtrigger = static_cast<std::uint8_t>(rt);
+            st.ltrigger = static_cast<std::uint8_t>(lt);
+            st.joy_x = static_cast<std::uint8_t>(jx);
+            st.joy_y = static_cast<std::uint8_t>(jy);
+            st.joy2_x = static_cast<std::uint8_t>(j2x);
+            st.joy2_y = static_cast<std::uint8_t>(j2y);
+            played.push_back({fr, st});
+        }
+        std::printf("input: playing %zu changes from %s\n", played.size(), play_input.c_str());
+    }
+    FILE* recording = nullptr;
+    if (!record_input.empty()) {
+        recording = std::fopen(record_input.c_str(), "w");
+        if (!recording) {
+            std::fprintf(stderr, "--record-input: cannot write %s\n", record_input.c_str());
+            return 2;
+        }
+        std::fprintf(recording, "# frame buttons rtrig ltrig joyx joyy joy2x joy2y (hex, dec...)\n");
+        std::printf("input: recording to %s (use --rtc-seed to repeat it exactly)\n",
+                    record_input.c_str());
+    }
+    dream::maple::ControllerState last_recorded;
+    bool have_recorded = false;
     sys.spg.on_vblank_out = [&] {
         if (!scripted.empty()) {
             const std::uint64_t f = sys.spg.frames();
@@ -1600,6 +1655,13 @@ int main(int argc, char** argv) {
             pad_ptr->state.buttons = static_cast<std::uint16_t>(0xFFFFu & ~held);
         }
         maple.vblank();
+        if (!played.empty()) {
+            const std::uint64_t f = sys.spg.frames();
+            while (played_at + 1 < played.size() && played[played_at + 1].frame <= f)
+                ++played_at;
+            if (played[played_at].frame <= f)
+                pad_ptr->state = played[played_at].state;
+        }
     };
 #ifdef DREAM_WITH_RENDERER
     // --window: the renderer, the offscreen target and the window, hung off the same two hooks the
@@ -1662,8 +1724,23 @@ int main(int argc, char** argv) {
                 paused_for += std::chrono::steady_clock::now() - paused_at;
             }
             // Scripted presses win while they are held, so --press still works with a window open.
-            if (scripted.empty() || pad_ptr->state.buttons == 0xFFFFu)
+            if (played.empty() && (scripted.empty() || pad_ptr->state.buttons == 0xFFFFu))
                 live->read_controls(pad_ptr->state);
+            if (recording) {
+                const auto& st = pad_ptr->state;
+                if (!have_recorded || st.buttons != last_recorded.buttons ||
+                    st.rtrigger != last_recorded.rtrigger || st.ltrigger != last_recorded.ltrigger ||
+                    st.joy_x != last_recorded.joy_x || st.joy_y != last_recorded.joy_y ||
+                    st.joy2_x != last_recorded.joy2_x || st.joy2_y != last_recorded.joy2_y) {
+                    std::fprintf(recording, "%llu %04x %u %u %u %u %u %u\n",
+                                 static_cast<unsigned long long>(sys.spg.frames()), st.buttons,
+                                 st.rtrigger, st.ltrigger, st.joy_x, st.joy_y, st.joy2_x,
+                                 st.joy2_y);
+                    std::fflush(recording);
+                    last_recorded = st;
+                    have_recorded = true;
+                }
+            }
             if (unthrottled)
                 return;
             const auto guest =
