@@ -1041,6 +1041,16 @@ private:
             out << "    goto " << label(pc) << "_skip;\n";
             out << label(pc + 2) << ":\n";
             out << "    " << slot_code << "\n";
+            // Entered this way, control continues at pc+4. When that is past the end of the
+            // function's range no block follows here, and falling out of the function would
+            // return to the caller (Capcom vs SNK 0x0c1672c8: bt.s into the slot of a jmp @r0).
+            if (!blocks_.count(pc + 4)) {
+                if (known_.count(normalise(pc + 4)))
+                    out << "    " << call_target_expr(pc + 4) << " return;\n";
+                else
+                    out << "    c.pc = " << hexu(pc + 4) << "; call_indirect(c, m, " << hexu(pc + 4)
+                        << "); return;\n";
+            }
             out << label(pc) << "_skip:;\n";
         }
         if (call_returns_.count(pc + 4) && !blocks_.count(pc + 4))
