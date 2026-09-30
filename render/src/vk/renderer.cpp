@@ -1,7 +1,6 @@
 // See renderer.h.
 #include "dream/render/vk/renderer.h"
 
-#include <algorithm>
 #include <array>
 #include <cstring>
 #include <vector>
@@ -387,33 +386,24 @@ void Renderer::draw(VkCommandBuffer cmd, const Frame& frame, const FrameGeometry
     // first, then punch-through (opaque with holes, so it can also write depth), then translucent
     // blended over the result.
     //
-    // Translucent polygons are sorted back to front per strip. That is the fallback the hardware
-    // does not need: a real PowerVR sorts per pixel, so two translucent surfaces that intersect
-    // come out right and a per-strip sort cannot. Per-pixel sorting is a later refinement
-    // (docs/runtime-render.md); a per-strip sort is what most Dreamcast rendering used for years
-    // and is right for all but intersecting transparency.
+    // The PowerVR resolves translucent fragments per pixel, which a per-strip depth sort cannot
+    // reproduce when one strip crosses several layers. Keep the guest's TA submission order as
+    // the stable fallback. The ratio selector submits its guide strips before the portraits that
+    // must cover them; strip-wide depth sorting pulled the guides over faces.
     struct Item {
         const Polygon* poly;
-        float depth;  // 1/w: larger is nearer
         bool blended;
         bool alpha_test;
     };
     std::vector<Item> items;
     const auto add_list = [&](ListType list, bool blended, bool alpha_test) {
         for (const Polygon& p : frame.lists[static_cast<unsigned>(list)]) {
-            float nearest = 0.0f;
-            for (std::uint32_t i = 0; i < p.count; ++i)
-                nearest = std::max(nearest, frame.vertices[p.first + i].z);
-            items.push_back({&p, nearest, blended, alpha_test});
+            items.push_back({&p, blended, alpha_test});
         }
     };
     add_list(ListType::Opaque, false, false);
     add_list(ListType::PunchThrough, false, true);
-    const std::size_t translucent_start = items.size();
     add_list(ListType::Translucent, true, false);
-    // Back to front: the farthest surface has the smallest 1/w and must be drawn first.
-    std::stable_sort(items.begin() + static_cast<std::ptrdiff_t>(translucent_start), items.end(),
-                     [](const Item& a, const Item& b) { return a.depth < b.depth; });
 
     VkPipeline bound = VK_NULL_HANDLE;
     for (const Item& item : items) {
