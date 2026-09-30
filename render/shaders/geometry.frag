@@ -59,7 +59,10 @@ void main() {
     // Punch-through polygons are opaque geometry with holes in it: the hardware keeps or discards
     // a pixel outright rather than blending, so the list can be drawn with depth writes on and in
     // any order. Anything at or below the threshold is not drawn at all.
-    if ((push.mode & 32) != 0 && colour.a < push.alpha_ref)
+    // Punch-through keeps only alpha strictly above the programmed threshold. The inclusive
+    // discard matters when PT_ALPHA_REF is zero: fully transparent portrait texels must still
+    // leave the background visible.
+    if ((push.mode & 32) != 0 && colour.a <= push.alpha_ref)
         discard;
 
     o_colour = clamp(colour, 0.0, 1.0);

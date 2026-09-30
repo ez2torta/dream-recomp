@@ -1,6 +1,7 @@
 // See renderer.h.
 #include "dream/render/vk/renderer.h"
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <vector>
@@ -387,23 +388,48 @@ void Renderer::draw(VkCommandBuffer cmd, const Frame& frame, const FrameGeometry
     // blended over the result.
     //
     // The PowerVR resolves translucent fragments per pixel, which a per-strip depth sort cannot
-    // reproduce when one strip crosses several layers. Keep the guest's TA submission order as
-    // the stable fallback. The ratio selector submits its guide strips before the portraits that
-    // must cover them; strip-wide depth sorting pulled the guides over faces.
+    // reproduce when one strip crosses several layers. For sprite-heavy gameplay and dense logo
+    // effects, strip-depth sorting is a better approximation. Menu/result composites rely more on
+    // TA submission order (the ratio selector submits guides before portraits), so preserve that
+    // order there. The main menu is a smaller sprite-heavy composite (30 sprites, 42 strips in the
+    // captured frame) and also needs the depth pass for its text layers.
+    const std::size_t translucent_count =
+        frame.lists[static_cast<unsigned>(ListType::Translucent)].size();
+    const bool sprite_heavy = frame.sprites > 64;
+    const bool dense_effect = translucent_count > 500;
+    const bool compact_menu = frame.sprites >= 24 && frame.sprites <= 48 &&
+                              translucent_count < 64;
+    const bool depth_sort_translucent = sprite_heavy || dense_effect || compact_menu;
     struct Item {
         const Polygon* poly;
+        float depth;
         bool blended;
         bool alpha_test;
     };
     std::vector<Item> items;
     const auto add_list = [&](ListType list, bool blended, bool alpha_test) {
         for (const Polygon& p : frame.lists[static_cast<unsigned>(list)]) {
-            items.push_back({&p, blended, alpha_test});
+            float depth = 0.0f;
+            if (depth_sort_translucent) {
+                for (std::uint32_t i = 0; i < p.count; ++i)
+                    depth += frame.vertices[p.first + i].z;
+                if (p.count != 0)
+                    depth /= static_cast<float>(p.count);
+            }
+            items.push_back({&p, depth, blended, alpha_test});
         }
     };
     add_list(ListType::Opaque, false, false);
     add_list(ListType::PunchThrough, false, true);
+    const std::size_t translucent_start = items.size();
     add_list(ListType::Translucent, true, false);
+    if (depth_sort_translucent) {
+        // Back to front: larger 1/w is nearer, so smaller mean depth is drawn first.
+        std::stable_sort(items.begin() + static_cast<std::ptrdiff_t>(translucent_start),
+                         items.end(), [](const Item& a, const Item& b) {
+                             return a.depth < b.depth;
+                         });
+    }
 
     VkPipeline bound = VK_NULL_HANDLE;
     for (const Item& item : items) {
