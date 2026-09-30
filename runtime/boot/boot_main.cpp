@@ -589,6 +589,12 @@ struct Live {
             std::fwrite(pvr_.reg_block(), 4, 0x2000 / 4, f);
             std::fclose(f);
         }
+        // Main RAM too (16 MB, the guest's whole state at this frame): the picture says what is
+        // wrong, this says why -- object tables, camera, whatever the game computed the frame from.
+        if (FILE* f = std::fopen((std::string(stem) + ".ram").c_str(), "wb")) {
+            std::fwrite(memory_.ram(), 1, dream::mem::DcMemory::kRamSize, f);
+            std::fclose(f);
+        }
         if (FILE* f = std::fopen((std::string(stem) + ".txt").c_str(), "w")) {
             std::fprintf(f, "guest frame %llu, presented frame %llu\n",
                          static_cast<unsigned long long>(guest_frame),
@@ -605,7 +611,7 @@ struct Live {
             std::fprintf(f, "parameter words: %zu\n", last_stream.size());
             std::fclose(f);
         }
-        std::printf("captured %s.{ppm,ta,vram,vram.regs,txt} at guest frame %llu\n", stem,
+        std::printf("captured %s.{ppm,ta,vram,vram.regs,ram,txt} at guest frame %llu\n", stem,
                     static_cast<unsigned long long>(guest_frame));
     }
 
