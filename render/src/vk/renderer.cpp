@@ -391,15 +391,22 @@ void Renderer::draw(VkCommandBuffer cmd, const Frame& frame, const FrameGeometry
     // reproduce when one strip crosses several layers. For sprite-heavy gameplay and dense logo
     // effects, strip-depth sorting is a better approximation. Menu/result composites rely more on
     // TA submission order (the ratio selector submits guides before portraits), so preserve that
-    // order there. The main menu is a smaller sprite-heavy composite (30 sprites, 42 strips in the
-    // captured frame) and also needs the depth pass for its text layers.
+    // order there. The main menu is a smaller sprite-heavy composite (22-30 sprites, 34-42 strips
+    // in the captured frames) and also needs the depth pass for its text layers.
     const std::size_t translucent_count =
         frame.lists[static_cast<unsigned>(ListType::Translucent)].size();
     const bool sprite_heavy = frame.sprites > 64;
     const bool dense_effect = translucent_count > 500;
-    const bool compact_menu = frame.sprites >= 24 && frame.sprites <= 48 &&
+    const bool compact_menu = frame.sprites >= 16 && frame.sprites <= 64 &&
                               translucent_count < 64;
-    const bool depth_sort_translucent = sprite_heavy || dense_effect || compact_menu;
+    // The training character select has a layered UI with 32 translucent strips and no sprites;
+    // Groove Select has the same shape with 113 strips. Both use screen-space layers that need
+    // depth ordering. The ratio selector's 24 strips are intentionally excluded because its
+    // guide lines must stay behind the portraits in TA submission order.
+    const bool layered_menu = frame.sprites == 0 && translucent_count >= 30 &&
+                              translucent_count <= 120;
+    const bool depth_sort_translucent =
+        sprite_heavy || dense_effect || compact_menu || layered_menu;
     struct Item {
         const Polygon* poly;
         float depth;
