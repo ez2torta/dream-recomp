@@ -46,6 +46,12 @@ public:
     // render to texture apart from ordinary double buffering, because a double-buffered title
     // never samples the buffer it just wrote. Returns the number dropped.
     std::size_t invalidate_range(std::uint32_t begin, std::uint32_t end);
+    // Call once per render, before the first get(). A cached texture is re-checked against its
+    // pixels in video memory the first time it is asked for in each render, and re-decoded if they
+    // changed. Guests rewrite texture memory by DMA and store queue, which the cache does not see
+    // as writes; without this, a title that streams new textures over old addresses keeps drawing
+    // the old ones (Capcom vs SNK's character sprites and win-screen portraits).
+    void begin_render() noexcept { ++render_; }
 
     // The descriptor set for a polygon's texture, or VK_NULL_HANDLE when it cannot be decoded.
     // `cmd` is a command buffer outside a render pass, used for the upload.
@@ -68,6 +74,8 @@ public:
     // Textures dropped because the renderer wrote over them: a non-zero count means the title
     // really is rendering to a texture rather than merely double buffering.
     std::uint32_t overwritten = 0;
+    // Textures re-decoded because their pixels in video memory changed since the last render.
+    std::uint32_t refreshed = 0;
     const std::string& error() const noexcept { return error_; }
 
 private:
@@ -86,10 +94,14 @@ private:
         VkDescriptorSet set = VK_NULL_HANDLE;
         HostBuffer staging;
         TextureInfo info;
+        std::uint64_t content_hash = 0;  // of the source bytes in video memory when decoded
+        std::uint64_t checked = 0;       // render_ at the last check
     };
 
     void free_entry(Entry& e);
     VkSampler sampler_for(std::uint32_t tsp, bool tiled);
+    // Hash of the entry's source bytes in video memory; 0 when the range is not inside it.
+    std::uint64_t source_hash(const TextureInfo& info) const;
     bool upload(VkCommandBuffer cmd, Entry& entry, const std::vector<std::uint32_t>& pixels);
 
     Context* ctx_ = nullptr;
@@ -101,6 +113,7 @@ private:
     const std::uint8_t* vram_ = nullptr;
     std::size_t vram_size_ = 0;
     std::uint32_t palette_[1024]{};
+    std::uint64_t render_ = 1;
     std::string error_;
 };
 

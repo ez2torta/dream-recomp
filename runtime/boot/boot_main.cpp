@@ -172,6 +172,12 @@ struct Live {
         // every frame.
         if (renderer.textures().set_palette(pvr_.reg_block() + 0x1000 / 4, palette_format()))
             ++palette_changes;
+        // Diagnostic: DREAM_TEX_FLUSH=1 drops the texture cache every render, to tell a stale
+        // cache from a wrong decode.
+        renderer.textures().begin_render();
+        static const bool tex_flush = std::getenv("DREAM_TEX_FLUSH") != nullptr;
+        if (tex_flush)
+            renderer.textures().invalidate();
         if (!offscreen.render(renderer, frame, geometry)) {
             if (!reported_error) {
                 reported_error = true;
@@ -2012,13 +2018,14 @@ int main(int argc, char** argv) {
         std::printf(
             "window: %llu frames drawn (%llu with a background plane), %llu presented (%llu "
             "decoded from video memory), %llu written back; textures %u decoded, %u failed, %u "
-            "overwritten by a render, %llu palette changes\n",
+            "overwritten by a render, %u refreshed after a guest write, %llu palette changes\n",
             static_cast<unsigned long long>(live->rendered),
             static_cast<unsigned long long>(live->backgrounds),
             static_cast<unsigned long long>(live->presented),
             static_cast<unsigned long long>(live->decoded_frames),
             static_cast<unsigned long long>(live->written_back), live->renderer.textures().decoded,
             live->renderer.textures().failed, live->renderer.textures().overwritten,
+            live->renderer.textures().refreshed,
             static_cast<unsigned long long>(live->palette_changes));
         if (live->have_frame)
             std::printf("window: last shown %s\n", live->shown.describe().c_str());

@@ -209,6 +209,29 @@ bool TextureCache::upload(VkCommandBuffer cmd, Entry& e, const std::vector<std::
     return true;
 }
 
+std::uint64_t TextureCache::source_hash(const TextureInfo& info) const {
+    const std::size_t lo = info.address, bytes = info.size_bytes();
+    if (bytes == 0 || lo > vram_size_ || bytes > vram_size_ - lo)
+        return 0;
+    // Four independent lanes so the multiplies overlap; a few GB/s is enough to check every
+    // texture a frame uses.
+    const std::uint8_t* p = vram_ + lo;
+    std::uint64_t h0 = 0x9E3779B97F4A7C15ull, h1 = h0 * 3, h2 = h0 * 5, h3 = h0 * 7;
+    std::size_t i = 0;
+    for (; i + 32 <= bytes; i += 32) {
+        std::uint64_t w[4];
+        std::memcpy(w, p + i, 32);
+        h0 = (h0 ^ w[0]) * 0xFF51AFD7ED558CCDull; h0 ^= h0 >> 29;
+        h1 = (h1 ^ w[1]) * 0xFF51AFD7ED558CCDull; h1 ^= h1 >> 29;
+        h2 = (h2 ^ w[2]) * 0xFF51AFD7ED558CCDull; h2 ^= h2 >> 29;
+        h3 = (h3 ^ w[3]) * 0xFF51AFD7ED558CCDull; h3 ^= h3 >> 29;
+    }
+    for (; i < bytes; ++i)
+        h0 = (h0 ^ p[i]) * 0x100000001B3ull;
+    const std::uint64_t h = h0 ^ (h1 * 31) ^ (h2 * 131) ^ (h3 * 1031);
+    return h ? h : 1;
+}
+
 VkDescriptorSet TextureCache::get(VkCommandBuffer cmd, std::uint32_t tcw, std::uint32_t tsp,
                                   bool tiled) {
     if (!vram_ || !ctx_)
@@ -218,8 +241,21 @@ VkDescriptorSet TextureCache::get(VkCommandBuffer cmd, std::uint32_t tcw, std::u
     const std::uint64_t key =
         (static_cast<std::uint64_t>(tcw) << 32) | (tsp & 0x3Fu) | (tiled ? 0x40u : 0u);
     if (auto it = entries_.find(key); it != entries_.end()) {
+        Entry& hit = it->second;
+        // Decoder rejections (no size) are kept as they are; everything else is re-checked once
+        // per render against the pixels it was decoded from.
+        if (hit.content_hash && hit.checked != render_) {
+            hit.checked = render_;
+            if (source_hash(hit.info) != hit.content_hash) {
+                vkDeviceWaitIdle(ctx_->device());
+                free_entry(hit);
+                entries_.erase(it);
+                ++refreshed;
+                return get(cmd, tcw, tsp, tiled);
+            }
+        }
         ++hits;
-        return it->second.set;
+        return hit.set;
     }
 
     Entry e;
@@ -240,6 +276,8 @@ VkDescriptorSet TextureCache::get(VkCommandBuffer cmd, std::uint32_t tcw, std::u
         return VK_NULL_HANDLE;
     }
     e.sampler = sampler_for(tsp, tiled);
+    e.content_hash = source_hash(e.info);
+    e.checked = render_;
 
     VkDescriptorSetAllocateInfo dsai{};
     dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
