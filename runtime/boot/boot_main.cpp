@@ -1971,6 +1971,23 @@ int main(int argc, char** argv) {
                 "watch: write%u 0x%08x = 0x%08x at pc 0x%08x pr 0x%08x r15 0x%08x frame %llu\n",
                 size * 8, a, v, sys.ctx.pc, sys.ctx.pr, sys.ctx.r[15],
                 static_cast<unsigned long long>(sys.spg.frames()));
+            // DREAM_WATCH_STACK=1: also print what looks like return addresses on the guest stack
+            // (words in the image that follow a call), innermost first. A rough backtrace.
+            static const bool with_stack = std::getenv("DREAM_WATCH_STACK") != nullptr;
+            if (with_stack) {
+                std::fprintf(stderr, "  stack:");
+                unsigned shown = 0;
+                for (std::uint32_t sp = sys.ctx.r[15]; sp < sys.ctx.r[15] + 0x400 && shown < 24;
+                     sp += 4) {
+                    const std::uint32_t w = sys.memory.read32(sp);
+                    const std::uint32_t link = w & 0x1FFFFFFFu;
+                    if ((w & 1u) == 0 && link >= 0x0C010000u && link < 0x0C280000u) {
+                        std::fprintf(stderr, " %08x", w);
+                        ++shown;
+                    }
+                }
+                std::fprintf(stderr, "\n");
+            }
         };
     }
 #ifdef DREAM_DEV_INTERPRETER
