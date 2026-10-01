@@ -40,6 +40,9 @@
 #include "dream/runtime/devinterp/replay.h"
 #endif
 #include "dream/translator/config/game_config.h"
+#ifdef DREAM_CVS1J_SCENARIO
+#include "cvs1j_scenario.h"
+#endif
 #ifdef DREAM_WITH_AUDIO
 #include "dream/audio/sink.h"
 #endif
@@ -189,6 +192,16 @@ struct Live {
         ++rendered;
     }
 
+    // Fast scenario boot skipped both buffers. Render the retained frame and register the
+    // displayed buffer too, so the first capture does not decode stale guest VRAM pixels.
+    void warmup_scenario(const std::vector<std::uint32_t>& stream) {
+        render(stream);
+        dream::render::FramebufferInfo fb;
+        if (rendered && dream::render::describe_framebuffer(pvr_.reg_block(), fb) && fb.enabled &&
+            !rendered_into(fb.address) && targets_.size() < 8)
+            targets_.push_back(fb.address);
+    }
+
     // True for a buffer the renderer has drawn into at some point. A title alternates between two
     // and does not swap the displayed one on every render, so asking whether the displayed buffer
     // is *the* most recent target is too strict; asking whether it is one of ours is the question
@@ -322,7 +335,7 @@ struct Live {
             capture();
         if (screenshot_at && presented == screenshot_at)
             screenshot();
-        if (capture_at && presented == capture_at)
+        if (std::find(capture_at.begin(), capture_at.end(), presented) != capture_at.end())
             capture();
         return true;
     }
@@ -557,7 +570,7 @@ struct Live {
         const std::uint32_t* src = from_renderer ? offscreen.pixels() : pixels.data();
         const std::size_t n = static_cast<std::size_t>(shown.width) * shown.height;
         for (std::size_t i = 0; i < n; ++i) {
-            const std::uint32_t p = src[i];
+            const std::uint32_t p = have_frame && src ? src[i] : 0;
             const unsigned char rgb[3] = {static_cast<unsigned char>(p),
                                           static_cast<unsigned char>(p >> 8),
                                           static_cast<unsigned char>(p >> 16)};
@@ -571,9 +584,12 @@ struct Live {
     // numbers that say where the run had got to. A report that comes with one of these can be
     // rendered again offline with dream_render_view; a report without one is a description of a
     // picture nobody else can see.
-    void capture() {
-        char stem[64];
-        std::snprintf(stem, sizeof stem, "capture-%03u", captures++);
+    void capture(std::string stem = {}) {
+        if (stem.empty()) {
+            char name[64];
+            std::snprintf(name, sizeof name, "capture-%03u", captures++);
+            stem = name;
+        }
         screenshot_to(std::string(stem) + ".ppm");
         if (!last_stream.empty()) {
             if (FILE* f = std::fopen((std::string(stem) + ".ta").c_str(), "wb")) {
@@ -611,7 +627,7 @@ struct Live {
             std::fprintf(f, "parameter words: %zu\n", last_stream.size());
             std::fclose(f);
         }
-        std::printf("captured %s.{ppm,ta,vram,vram.regs,ram,txt} at guest frame %llu\n", stem,
+        std::printf("captured %s.{ppm,ta,vram,vram.regs,ram,txt} at guest frame %llu\n", stem.c_str(),
                     static_cast<unsigned long long>(guest_frame));
     }
 
@@ -663,7 +679,8 @@ struct Live {
     // --screenshot-at N / --capture-at N: the same thing F12 and F11 do, at the Nth presented
     // frame, for a run with nobody at the keyboard. These were environment variables, which is
     // fine for a one-off and wrong for something the documentation tells people to use.
-    std::uint64_t screenshot_at = 0, capture_at = 0;
+    std::uint64_t screenshot_at = 0;
+    std::vector<std::uint64_t> capture_at;
     std::chrono::steady_clock::time_point fps_mark{};
     std::uint64_t fps_frames_at_mark = 0;
     double fps_guest_at_mark = 0;
@@ -1100,6 +1117,7 @@ void usage(const char* argv0, std::FILE* out) {
         "  --record-input FILE    write every change of the pad to FILE, one line per change, so a\n"
         "                         session played by hand can be repeated exactly\n"
         "  --play-input FILE      replay a recording. Use the same --rtc-seed as when it was made\n"
+        "  --scenario FILE        run a title-specific Training scenario with relative actions/captures\n"
         "  --press B@F[,B@F...]   hold a button for 8 frames from frame F (a b c x y z start\n"
         "                         up down left right), to get past screens that wait for input\n"
         "\n"
@@ -1117,7 +1135,7 @@ void usage(const char* argv0, std::FILE* out) {
         "  --dump-aram FILE       the 2 MB of sound RAM at the stop\n"
         "  --dump FILE            a memory range at the stop\n"
         "  --screenshot-at N      write a screenshot at the Nth presented frame (F12 by hand)\n"
-        "  --capture-at N         write a full frame capture at the Nth (F11 by hand)\n"
+        "  --capture-at N         write a full frame capture at the Nth; repeat for more\n"
         "  --wav FILE             record the audio as 16-bit stereo 44.1 kHz\n"
         "  --sample N             sample the CPU every N cycles (--sample-file FILE)\n"
         "\n"
@@ -1184,7 +1202,7 @@ int main(int argc, char** argv) {
     // frame, so a headless run can get past "press start" screens. Names: a b c x y z start up
     // down left right.
     std::string presses;
-    std::string record_input, play_input;
+    std::string record_input, play_input, scenario_file;
     // --window: open a window and play. Without it the run is headless exactly as before.
     // --scale N draws the geometry at N times the guest's resolution; the frame is resampled back
     // into the guest's framebuffer, so the guest never learns its screen changed size.
@@ -1194,12 +1212,14 @@ int main(int argc, char** argv) {
     [[maybe_unused]] bool start_with_fps = false;
     // --suggest-config FILE: the TOML this run earned, ready to paste into the game's config.
     std::string suggest_config;
-    [[maybe_unused]] std::uint64_t screenshot_at = 0, capture_at = 0;
+    [[maybe_unused]] std::uint64_t screenshot_at = 0;
+    std::vector<std::uint64_t> capture_at;
     unsigned scale = 1;
     // --rtc-seed N: a fixed console clock, so two runs of the same build do the same thing and can
     // be compared. Any non-zero value will do; the number itself only changes the date a title
     // shows.
     std::uint64_t rtc_seed = 0;
+    bool rtc_seed_set = false;
     // --write-hash FILE: one line per frame with a rolling hash of every guest memory write. Two
     // runs that agree line for line did the same thing; the first line that differs is the frame
     // the divergence began (docs/differential-harness.md).
@@ -1287,6 +1307,8 @@ int main(int argc, char** argv) {
             record_input = argv[++i];
         else if (!std::strcmp(argv[i], "--play-input") && i + 1 < argc)
             play_input = argv[++i];
+        else if (!std::strcmp(argv[i], "--scenario") && i + 1 < argc)
+            scenario_file = argv[++i];
         else if (!std::strcmp(argv[i], "--max-seconds") && i + 1 < argc)
             max_seconds = std::strtoull(argv[++i], nullptr, 0);
         else if (!std::strcmp(argv[i], "--window"))
@@ -1304,9 +1326,11 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--screenshot-at") && i + 1 < argc)
             screenshot_at = std::strtoull(argv[++i], nullptr, 0);
         else if (!std::strcmp(argv[i], "--capture-at") && i + 1 < argc)
-            capture_at = std::strtoull(argv[++i], nullptr, 0);
-        else if (!std::strcmp(argv[i], "--rtc-seed") && i + 1 < argc)
+            capture_at.push_back(std::strtoull(argv[++i], nullptr, 0));
+        else if (!std::strcmp(argv[i], "--rtc-seed") && i + 1 < argc) {
             rtc_seed = std::strtoull(argv[++i], nullptr, 0);
+            rtc_seed_set = true;
+        }
         else if (!std::strcmp(argv[i], "--write-hash") && i + 1 < argc)
             write_hash = argv[++i];
         else if (!std::strcmp(argv[i], "--write-log") && i + 1 < argc)
@@ -1364,6 +1388,66 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "%s\n", err.c_str());
         return 2;
     }
+#ifdef DREAM_CVS1J_SCENARIO
+    std::unique_ptr<cvs1j::ScenarioDriver> scenario;
+    if (!scenario_file.empty()) {
+        cvs1j::Scenario spec;
+        if (cfg.id != "cvs1j" || !play_input.empty() || !presses.empty() || interpret_all) {
+            std::fprintf(stderr, "--scenario requires CVS1J and cannot combine with --play-input, --press or --interpret\n");
+            return 2;
+        }
+        if (!spec.load(scenario_file, err)) {
+            std::fprintf(stderr, "scenario: %s\n", err.c_str()); return 2;
+        }
+        if (rtc_seed_set && rtc_seed != spec.seed) {
+            std::fprintf(stderr, "scenario: --rtc-seed conflicts with scenario seed\n"); return 2;
+        }
+        rtc_seed = spec.seed;
+        if (!window_mode && !spec.captures.empty()) {
+#ifdef DREAM_WITH_RENDERER
+#if defined(__APPLE__) || defined(__linux__)
+            if (::setenv("SDL_VIDEODRIVER", "offscreen", 1) != 0) {
+                std::fprintf(stderr, "scenario: cannot select SDL offscreen driver\n"); return 2;
+            }
+            window_mode = true;
+            no_audio = true;
+#else
+            std::fprintf(stderr, "scenario captures require --window on this platform\n"); return 2;
+#endif
+#else
+            std::fprintf(stderr, "scenario captures require a renderer build\n"); return 2;
+#endif
+        }
+        scenario = std::make_unique<cvs1j::ScenarioDriver>(std::move(spec));
+        if (vmu.empty()) vmu = (cfg.dir.parent_path()/"saves"/"cvs1j_unlocked.vmu").string();
+        std::string copied;
+        if (!scenario->prepare_output(vmu, copied, err)) {
+            std::fprintf(stderr, "scenario: %s\n", err.c_str()); return 2;
+        }
+        vmu = copied;
+        std::printf("scenario: output %s\n", scenario->output_dir().string().c_str());
+    }
+#else
+    if (!scenario_file.empty()) {
+        std::fprintf(stderr, "this title has no scenario adapter\n"); return 2;
+    }
+    (void)rtc_seed_set;
+#endif
+    [[maybe_unused]] dream::maple::ControllerState scenario_manual;
+    auto scenario_active = [&] {
+#ifdef DREAM_CVS1J_SCENARIO
+        return bool(scenario);
+#else
+        return false;
+#endif
+    };
+    auto scenario_ready = [&] {
+#ifdef DREAM_CVS1J_SCENARIO
+        return !scenario || scenario->ready();
+#else
+        return true;
+#endif
+    };
     std::unique_ptr<dream::gdrom::Disc> disc;
     if (cfg.disc_image) {
         disc = dream::gdrom::open_disc(*cfg.disc_image, err);
@@ -1378,6 +1462,19 @@ int main(int argc, char** argv) {
         return 2;
     }
     std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+
+#ifdef DREAM_CVS1J_SCENARIO
+    if (scenario) {
+        // The read-only screen indicators are specific to this exact Japanese executable.
+        std::uint64_t fingerprint = 14695981039346656037ull;
+        for (unsigned char byte : bytes) fingerprint = (fingerprint ^ byte) * 1099511628211ull;
+        if (bytes.size() != 2388577 || fingerprint != 0xa3766f69a1fd890aull ||
+            cfg.load_address != 0x8c010000) {
+            std::fprintf(stderr, "scenario: unsupported CVS1J executable revision\n");
+            return 2;
+        }
+    }
+#endif
 
     dream::System sys;
     dream::hle::Bios bios(sys);
@@ -1654,6 +1751,20 @@ int main(int argc, char** argv) {
                     held |= bit;
             pad_ptr->state.buttons = static_cast<std::uint16_t>(0xFFFFu & ~held);
         }
+#ifdef DREAM_CVS1J_SCENARIO
+        if (scenario) {
+            pad_ptr->state = scenario->tick(sys.memory.ram(), sys.spg.frames());
+            if (scenario->ready() && scenario->spec().interactive) {
+                pad_ptr->state.buttons &= scenario_manual.buttons;
+                pad_ptr->state.ltrigger = std::max(pad_ptr->state.ltrigger, scenario_manual.ltrigger);
+                pad_ptr->state.rtrigger = std::max(pad_ptr->state.rtrigger, scenario_manual.rtrigger);
+                pad_ptr->state.joy_x = scenario_manual.joy_x;
+                pad_ptr->state.joy_y = scenario_manual.joy_y;
+            }
+            if (!scenario->error().empty()) throw StopRun{"scenario failed"};
+            if (scenario->done()) throw StopRun{"scenario complete"};
+        }
+#endif
         maple.vblank();
         if (!played.empty()) {
             const std::uint64_t f = sys.spg.frames();
@@ -1668,6 +1779,7 @@ int main(int argc, char** argv) {
     // headless run uses. Both hooks may already be taken (--dump-ta captures renders, the scripted
     // presses run at vblank), so each is chained rather than replaced.
     std::unique_ptr<Live> live;
+    std::vector<std::uint32_t> scenario_warmup_stream;
     if (window_mode) {
         live = std::make_unique<Live>(sys.memory, pvr);
         live->writeback = writeback;
@@ -1690,24 +1802,49 @@ int main(int argc, char** argv) {
         live->load_bindings();
         std::printf("F1 (or a pad's select button) opens the controller bindings\n");
         auto previous_render = std::move(pvr.on_render);
-        pvr.on_render = [&live, previous_render](const std::vector<std::uint32_t>& stream) {
+        pvr.on_render = [&, previous_render](const std::vector<std::uint32_t>& stream) {
             if (previous_render)
                 previous_render(stream);
+            if (!scenario_ready()) {
+                scenario_warmup_stream = stream;
+                return;
+            }
             live->render(stream);
         };
         // Real time, so the title runs at the speed it was written for. The guest clock is the
         // reference: sleep only while ahead of it, never speed anything up to catch up, because a
         // frame that took too long is gone and pretending otherwise makes the audio stutter.
-        const auto started = std::chrono::steady_clock::now();
+        auto started = std::chrono::steady_clock::now();
         // Wall-clock time the guest was stopped for, which the pacing below owes back. Without it
         // the run would sprint to catch up the moment the binding screen closed.
         auto paused_for = std::chrono::steady_clock::duration::zero();
         auto previous_vblank = std::move(sys.spg.on_vblank_out);
-        sys.spg.on_vblank_out = [&, previous_vblank, started] {
+        sys.spg.on_vblank_out = [&, previous_vblank, started, paused_for,
+                                   origin_cycles = std::uint64_t(0), paced_from_fight = false]() mutable {
             if (previous_vblank)
                 previous_vblank();
+            if (!scenario_ready()) {
+                if (!live->window.poll()) throw StopRun{"the window was closed during scenario boot"};
+                return;
+            }
+            if (scenario_active() && !paced_from_fight) {
+                started = std::chrono::steady_clock::now();
+                origin_cycles = sys.ctx.cycles;
+                paced_from_fight = true;
+                if (!scenario_warmup_stream.empty()) {
+                    live->warmup_scenario(scenario_warmup_stream);
+                    scenario_warmup_stream.clear();
+                }
+            }
             if (!live->present(sys.spg.frames(), sys.ctx.cycles))
                 throw StopRun{"the window was closed"};
+#ifdef DREAM_CVS1J_SCENARIO
+            if (scenario)
+                for (const auto& stem : scenario->take_captures()) {
+                    live->capture(stem);
+                    if (!scenario->capture_written(stem)) throw StopRun{"scenario capture failed"};
+                }
+#endif
             // The binding screen stops the guest rather than drawing over a running one: nobody
             // rebinds a control mid-corner, and a control being captured cannot also be played.
             // The window keeps presenting, so the screen still draws and still answers the player.
@@ -1724,7 +1861,12 @@ int main(int argc, char** argv) {
                 paused_for += std::chrono::steady_clock::now() - paused_at;
             }
             // Scripted presses win while they are held, so --press still works with a window open.
-            if (played.empty() && (scripted.empty() || pad_ptr->state.buttons == 0xFFFFu))
+#ifdef DREAM_CVS1J_SCENARIO
+            if (scenario && scenario->ready() && scenario->spec().interactive)
+                live->read_controls(scenario_manual);
+            else
+#endif
+            if (!scenario_active() && played.empty() && (scripted.empty() || pad_ptr->state.buttons == 0xFFFFu))
                 live->read_controls(pad_ptr->state);
             if (recording) {
                 const auto& st = pad_ptr->state;
@@ -1744,7 +1886,7 @@ int main(int argc, char** argv) {
             if (unthrottled)
                 return;
             const auto guest =
-                std::chrono::duration<double>(static_cast<double>(sys.ctx.cycles) / 200e6);
+                std::chrono::duration<double>(static_cast<double>(sys.ctx.cycles-origin_cycles) / 200e6);
             const auto target =
                 started + paused_for +
                 std::chrono::duration_cast<std::chrono::steady_clock::duration>(guest);
@@ -1788,7 +1930,7 @@ int main(int argc, char** argv) {
     aica.on_sample = [&](std::int16_t l, std::int16_t r) {
         ++arm_pcs[aica.arm.next_pc()];
 #ifdef DREAM_WITH_AUDIO
-        sink.push(l, r);
+        if (scenario_ready()) sink.push(l, r);
 #endif
         if (!wav.empty() && pcm.size() < 44100u * 2u * 600u) {  // cap at ten minutes
             pcm.push_back(l);
@@ -2115,6 +2257,13 @@ int main(int argc, char** argv) {
     }
 #ifdef DREAM_WITH_RENDERER
     if (live) {
+#ifdef DREAM_CVS1J_SCENARIO
+        if (scenario && (!scenario->error().empty() || !scenario->done())) {
+            if (!scenario_warmup_stream.empty()) live->warmup_scenario(scenario_warmup_stream);
+            live->present(sys.spg.frames(), sys.ctx.cycles);
+            live->capture((scenario->output_dir()/"diagnostic").string());
+        }
+#endif
         std::printf(
             "window: %llu frames drawn (%llu with a background plane), %llu presented (%llu "
             "decoded from video memory), %llu written back; textures %u decoded, %u failed, %u "
@@ -2289,6 +2438,22 @@ int main(int argc, char** argv) {
         std::ofstream o(report);
         o << text;
     }
+#ifdef DREAM_CVS1J_SCENARIO
+    if (scenario) {
+        auto scenario_report = scenario->report();
+        std::printf("%s", scenario_report.c_str());
+        std::ofstream result(scenario->output_dir()/"scenario-report.txt");
+        result << scenario_report << text;
+        result.flush();
+        if (!result) {
+            std::fprintf(stderr, "scenario: could not write scenario-report.txt\n");
+            rc = 1;
+        }
+        if (!scenario->error().empty() || !scenario->done()) {
+            rc = 1;
+        }
+    }
+#endif
     if (stop_on_ta && !reached_ta && rc == 0)
         rc = 1;
     return rc;
