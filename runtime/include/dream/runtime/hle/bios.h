@@ -68,6 +68,40 @@ public:
 
     Flash& flash() noexcept { return flash_; }
 
+    void serialize(state::Archive& ar) {
+        ar.raw(&gd_, sizeof gd_);
+        ar.pod(sectors_read);
+        ar.pod(lang_);
+        ar.pod(region_);
+        ar.pod(broadcast_);
+        ar.pod(gd_event_);
+        // The syscall tallies. A resumed run's report would otherwise start from zero, and the gate
+        // diffs reports as well as hashes.
+        if (ar.saving()) {
+            std::uint64_t n = counts.size();
+            ar.pod(n);
+            for (const auto& kv : counts) {
+                std::string k = kv.first;
+                std::uint64_t v = kv.second;
+                ar.str(k);
+                ar.pod(v);
+            }
+        } else {
+            std::uint64_t n = 0;
+            ar.pod(n);
+            if (ar.failed())
+                return;
+            counts.clear();
+            for (std::uint64_t i = 0; i < n && !ar.failed(); ++i) {
+                std::string k;
+                std::uint64_t v = 0;
+                ar.str(k);
+                ar.pod(v);
+                counts[k] = v;
+            }
+        }
+    }
+
 private:
     Language lang_ = Language::English;
     Region region_ = Region::Usa;

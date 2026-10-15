@@ -34,6 +34,7 @@
 #include "dream/runtime/sh4/abi.h"
 #include "dream/runtime/sh4/dmac.h"
 #include "dream/runtime/sh4/ops.h"
+#include "dream/runtime/state/archive.h"
 #include "dream/runtime/system.h"
 #ifdef DREAM_DEV_INTERPRETER
 #include "dream/runtime/devinterp/interpreter.h"
@@ -700,6 +701,7 @@ private:
 // the report; status reads say the FIFO is empty so polling senders never wait.
 struct SerialCapture final : dream::mem::MmioHandler {
     std::string transmitted;
+    void serialize(dream::state::Archive& ar) { ar.str(transmitted); }
     std::uint32_t read(std::uint32_t addr, unsigned) override {
         switch (addr & 0xFFu) {
             case 0x10:
@@ -1121,6 +1123,17 @@ void usage(const char* argv0, std::FILE* out) {
         "  --press B@F[,B@F...]   hold a button for 8 frames from frame F (a b c x y z start\n"
         "                         up down left right), to get past screens that wait for input\n"
         "\n"
+        "Fast start (docs/training-fast-start-plan.md):\n"
+        "  --save-state FILE      write a machine snapshot at the next guest interrupt poll once\n"
+        "                         --save-state-at-frame is reached (and --scenario is ready), then\n"
+        "                         stop. The file holds the game's own RAM and VRAM: keep it in the\n"
+        "                         working tree, never in version control.\n"
+        "  --save-state-at-frame N  the frame the snapshot is taken at (default 0: the first poll)\n"
+        "  --load-state FILE      resume from a snapshot instead of booting, so a Training fight\n"
+        "                         starts with no intro or menu walk\n"
+        "  --state-key S          ties a snapshot to the build that made it; a load refuses a\n"
+        "                         mismatched key. Pass e.g. a hash of the binary and TOML.\n"
+        "\n"
         "Reporting what happened:\n"
         "  --report FILE          write the end-of-run report to a file as well as stdout\n"
         "  --suggest-config FILE  write the TOML this run earned: the call targets discovery\n"
@@ -1162,6 +1175,12 @@ int main(int argc, char** argv) {
     // nobody chose is indistinguishable from a crash, and the flag is right there for the runs
     // that do want bounding: every headless check in this repository passes it explicitly.
     std::uint64_t max_frames = 0, max_seconds = 0, sample_every = 0;
+    // --save-state FILE [--save-state-at-frame N] / --load-state FILE: a machine snapshot taken at
+    // a guest poll boundary once the frame and (with --scenario) readiness conditions are met, and
+    // a run resumed from one. The state is the game's own RAM and VRAM: it lives in the working
+    // tree, never in version control. --state-key pins a state to the build that made it.
+    std::string save_state, load_state, state_key;
+    std::uint64_t save_state_at_frame = 0;
     bool interpret_all = false;  // dev builds: run everything through the interpreter
     std::string wav;             // --wav FILE: record the AICA output (16-bit stereo 44.1 kHz)
     std::string dump_aram;       // --dump-aram FILE: write the 2 MB of sound RAM at the stop
@@ -1250,6 +1269,14 @@ int main(int argc, char** argv) {
             stop_on_ta = true;
         else if (!std::strcmp(argv[i], "--max-frames") && i + 1 < argc)
             max_frames = std::strtoull(argv[++i], nullptr, 0);
+        else if (!std::strcmp(argv[i], "--save-state") && i + 1 < argc)
+            save_state = argv[++i];
+        else if (!std::strcmp(argv[i], "--load-state") && i + 1 < argc)
+            load_state = argv[++i];
+        else if (!std::strcmp(argv[i], "--save-state-at-frame") && i + 1 < argc)
+            save_state_at_frame = std::strtoull(argv[++i], nullptr, 0);
+        else if (!std::strcmp(argv[i], "--state-key") && i + 1 < argc)
+            state_key = argv[++i];
         else if (!std::strcmp(argv[i], "--dump") && i + 1 < argc)
             dump = argv[++i];
         else if (!std::strcmp(argv[i], "--sample-file") && i + 1 < argc)
@@ -1950,6 +1977,29 @@ int main(int argc, char** argv) {
         sys.sched.request(rtc_tick, 200'000'000ull);
     });
     sys.sched.request(rtc_tick, 200'000'000ull);
+    // ---- machine snapshot -----------------------------------------------------------------------
+    // Every device that holds mutable state, in a fixed order. A save and a load walk the same
+    // list; the format version and the caller's key in the header refuse a stale or foreign file.
+    bool state_saved = false;
+    auto serialize_machine = [&](dream::state::Archive& ar) {
+        sys.serialize(ar);
+        bios.serialize(ar);
+        pvr.serialize(ar);
+        dmac.serialize(ar);
+        sysblock.serialize(ar);
+        g2.serialize(ar);
+        maple.serialize(ar);
+        aica.serialize(ar);
+        aica_rtc.serialize(ar);
+        g1.serialize(ar);
+        pvrdma.serialize(ar);
+        dma_triggers.serialize(ar);
+        bsc.serialize(ar);
+        ubc.serialize(ar);
+        cpg.serialize(ar);
+        rtc.serialize(ar);
+        scif.serialize(ar);
+    };
     // Frame and time limits, checked once per scanline.
     int tick = -1;
     const std::uint64_t period = sys.spg.line_cycles();
@@ -2046,6 +2096,25 @@ int main(int argc, char** argv) {
         if (max_seconds && now >= max_seconds * 200'000'000ull)
             throw StopRun{"time limit"};
         sys.sched.request(tick, period);
+        // Snapshot at a top-level guest interrupt poll once the frame is reached and the scenario
+        // (if any) is ready. `nesting == 0` keeps the resume at an ordinary poll rather than inside
+        // a handler; `!advancing_for_device` keeps it out of a device-access clock advance, where
+        // ctx.pc is not the poll point. The throw ends the run that was only walking to save.
+        if (!save_state.empty() && !state_saved && !sys.advancing_for_device && sys.nesting == 0 &&
+            sys.spg.frames() >= save_state_at_frame && scenario_ready()) {
+            state_saved = true;
+            dream::state::Archive ar(dream::state::Archive::Mode::Save);
+            serialize_machine(ar);
+            std::string state_err;
+            if (!ar.write_file(save_state, state_key, state_err))
+                std::fprintf(stderr, "state: %s\n", state_err.c_str());
+            else
+                std::printf("state: wrote %s: frame %llu, pc 0x%08x, %zu bytes\n",
+                            save_state.c_str(),
+                            static_cast<unsigned long long>(sys.spg.frames()), sys.ctx.pc,
+                            ar.buffer().size());
+            throw StopRun{"state saved"};
+        }
     });
     sys.sched.request(tick, period);
     // Optional register sampler: every N cycles record pc (last call site), r15, r0, sr.
@@ -2156,6 +2225,23 @@ int main(int argc, char** argv) {
     (void)replay_self_check;
     (void)replay_only;
 #endif
+    // A loaded state brings every device and the CPU context back; the run then resumes at the
+    // saved pc instead of at the entry.
+    if (!load_state.empty()) {
+        dream::state::Archive ar(dream::state::Archive::Mode::Load);
+        std::string state_err;
+        if (!ar.read_file(load_state, state_key, state_err)) {
+            std::fprintf(stderr, "state: %s\n", state_err.c_str());
+            return 2;
+        }
+        serialize_machine(ar);
+        if (ar.failed()) {
+            std::fprintf(stderr, "state: %s does not match this build\n", load_state.c_str());
+            return 2;
+        }
+        std::printf("state: loaded %s: frame %llu, pc 0x%08x\n", load_state.c_str(),
+                    static_cast<unsigned long long>(sys.spg.frames()), sys.ctx.pc);
+    }
     dream::sh4::GuestFn entry = dream::sh4::find_function(cfg.entry);
     if (!entry) {
         std::fprintf(stderr, "no translated function at entry 0x%08x\n", cfg.entry);
@@ -2194,7 +2280,29 @@ int main(int argc, char** argv) {
             }
         } else
 #endif
-        {
+        if (!load_state.empty()) {
+            // Resume: complete the interrupt poll the snapshot interrupted, then run from the saved
+            // pc. on_poll advances the clock, delivers the pending interrupt and re-arms the next
+            // poll, which is exactly what the emitted poll site was in the middle of when it saved;
+            // a non-local return from inside that delivery continues at its target, the same way
+            // run_guest drives it.
+            const std::uint32_t resume_pc = sys.ctx.pc;
+            std::uint32_t pc;
+            try {
+                sys.on_poll(sys.ctx, sys.memory);
+                pc = resume_pc;
+            } catch (const dream::sh4::NonLocalReturn& n) {
+                pc = n.pc;
+            }
+            for (;;) {
+                try {
+                    dream::sh4::resume_at(sys.ctx, sys.memory, pc);
+                    pc = sys.ctx.pr;
+                } catch (const dream::sh4::NonLocalReturn& n) {
+                    pc = n.pc;
+                }
+            }
+        } else {
             (void)interpret_all;
             (void)entry;
             dream::sh4::run_guest(sys.ctx, sys.memory, cfg.entry);

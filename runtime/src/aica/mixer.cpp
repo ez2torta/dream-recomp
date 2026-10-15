@@ -840,6 +840,29 @@ void Mixer::channel_reg_written(unsigned channel, unsigned reg, unsigned size) {
     chans_[channel & 63].reg_write(reg & 0x7F, size);
 }
 
+void Mixer::serialize(state::Archive& ar) {
+    // Channel is all integers plus a few pointers that a byte copy cannot carry: the owning mixer,
+    // the register slot, the DSP mix bus it sends to and the phase-LFO scale table. Copy it whole
+    // and re-derive those from `number` and the register image on the way back in.
+    ar.raw(chans_, sizeof(Channel) * 64);
+    ar.raw(&dsp_, sizeof dsp_);
+    if (ar.loading()) {
+        for (int i = 0; i < 64; ++i) {
+            Channel& ch = chans_[i];
+            ch.mixer = this;
+            ch.number = i;
+            ch.ccd = reinterpret_cast<ChannelRegs*>(regs_ + static_cast<std::size_t>(i) * 0x80);
+            ch.VolMix.DSPOut = &dsp_.MIXS[ch.ccd->ISEL];
+            ch.lfo.plfo_scale = kPlfoScales[ch.ccd->PLFOS];
+            ch.update_stream_step();
+        }
+    }
+    ar.pod(key_ons);
+    ar.pod(key_offs);
+    ar.pod(samples);
+    ar.pod(nonzero_samples);
+}
+
 void Mixer::ring_buffer_written() {
     const CommonRegs* common = reinterpret_cast<const CommonRegs*>(regs_ + 0x2800);
     dsp_.RBL = (8192u << common->RBL) - 1;

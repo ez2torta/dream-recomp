@@ -41,6 +41,23 @@ public:
                   spg_hblank = 0x007E0345, spg_load = 0x01060359, spg_vblank = 0x00150104,
                   spg_width = 0x07F1933F;
 
+    void serialize(state::Archive& ar) {
+        ar.pod(spg_hblank_int);
+        ar.pod(spg_vblank_int);
+        ar.pod(spg_control);
+        ar.pod(spg_hblank);
+        ar.pod(spg_load);
+        ar.pod(spg_vblank);
+        ar.pod(spg_width);
+        ar.pod(event_);
+        ar.pod(vclk_full_);
+        ar.pod(line_cycles_);
+        ar.pod(scanline_);
+        ar.pod(vsync_);
+        ar.pod(fieldnum_);
+        ar.pod(frames_);
+    }
+
 private:
     void recalc();
     void on_line();

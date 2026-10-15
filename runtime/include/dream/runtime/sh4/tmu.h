@@ -28,6 +28,18 @@ public:
     std::uint32_t tcor(unsigned ch) const noexcept { return tcor_[ch]; }
     std::uint8_t tstr() const noexcept { return tstr_; }
 
+    void serialize(state::Archive& ar) {
+        ar.pod(event_);
+        ar.pod(tcor_);
+        ar.pod(tcr_mode_);
+        ar.pod(tcr_);
+        ar.pod(tstr_);
+        ar.pod(tocr_);
+        ar.pod(shift_);
+        ar.pod(running_);
+        ar.pod(base_);
+    }
+
 private:
     static constexpr std::uint16_t kUnf = 0x100, kUnie = 0x20;
     std::int64_t counter(unsigned ch) const noexcept;

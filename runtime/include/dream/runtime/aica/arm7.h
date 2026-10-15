@@ -7,6 +7,8 @@
 
 #include <cstdint>
 
+#include "dream/runtime/state/archive.h"
+
 namespace dream::aica {
 
 // What the ARM7 sees: 2 MB of sound RAM mirrored through 0x007FFFFF and the AICA registers at
@@ -99,6 +101,29 @@ public:
 
     std::uint64_t instructions = 0, fiqs = 0, swis = 0, undefined_ops = 0;
     std::uint64_t fiqs_by_level[8] = {};
+
+    void serialize(state::Archive& ar) {
+        ar.raw(r_, sizeof r_);
+        ar.pod(n_flag_);
+        ar.pod(z_flag_);
+        ar.pod(c_flag_);
+        ar.pod(v_flag_);
+        ar.pod(irq_enable_);
+        ar.pod(fiq_enable_);
+        ar.pod(enabled_);
+        ar.pod(mode_);
+        ar.pod(ticks_);
+        ar.pod(aica_interr_);
+        ar.pod(e68k_out_);
+        ar.pod(aica_reg_l_);
+        ar.pod(e68k_reg_l_);
+        ar.pod(e68k_reg_m_);
+        ar.pod(instructions);
+        ar.pod(fiqs);
+        ar.pod(swis);
+        ar.pod(undefined_ops);
+        ar.pod(fiqs_by_level);
+    }
 
 private:
     template <typename T>

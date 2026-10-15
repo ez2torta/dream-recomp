@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "dream/runtime/fenv.h"
 #include "dream/runtime/holly/intc.h"
 #include "dream/runtime/mem/dc_memory.h"
 #include "dream/runtime/pvr/spg.h"
@@ -41,6 +42,29 @@ public:
     void reset();
     // Installs this system as the ABI hook target (one system at a time).
     void install();
+
+    // Savestate of the system's own devices. The host flags (interpret_all, advancing_for_device)
+    // and the diagnostic fault log are not state: the launcher sets the first and reads the second.
+    void serialize(state::Archive& ar) {
+        memory.serialize(ar);
+        sched.serialize(ar);
+        intc.serialize(ar);
+        tmu.serialize(ar);
+        holly.serialize(ar);
+        spg.serialize(ar);
+        ar.raw(&ctx, sizeof ctx);
+        // The host's FP control register mirrors FPSCR (rounding mode and denormal flushing), and
+        // it is not part of the context; reprogram it so a resumed run computes the same bits.
+        if (ar.loading())
+            ::dream::fenv::apply(::dream::fenv::from_fpscr(ctx.fpscr));
+        ar.pod(interrupts_delivered);
+        ar.pod(traps_taken);
+        ar.pod(nesting);
+        ar.pod(max_nesting);
+        ar.pod(task_switch_rtes);
+        ar.vec(frame_pcs);
+        ar.vec(frame_sps);
+    }
 
     void on_poll(sh4::Ctx& c, ::dream::Memory& m) override;
     void on_trapa(sh4::Ctx& c, ::dream::Memory& m, std::uint32_t imm) override;

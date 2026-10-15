@@ -35,6 +35,15 @@ public:
     }
     std::uint64_t transfers = 0, bytes = 0, refused = 0, to_aica_ram = 0;
 
+    void serialize(state::Archive& ar) {
+        ar.pod(regs_);
+        ar.pod(events_);
+        ar.pod(transfers);
+        ar.pod(bytes);
+        ar.pod(refused);
+        ar.pod(to_aica_ram);
+    }
+
 private:
     void start(unsigned channel);
     void finish(unsigned channel);

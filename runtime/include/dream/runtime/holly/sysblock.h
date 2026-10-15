@@ -45,6 +45,24 @@ public:
         std::uint32_t dmaor = 0, src = 0, dst = 0, len = 0;
     } first_refused, last_refused;
 
+    void serialize(state::Archive& ar) {
+        ar.pod(regs_);
+        ar.pod(ch2_yuv_transfers);
+        ar.pod(ch2_transfers);
+        ar.pod(ch2_ta_bytes);
+        ar.pod(ch2_texture_bytes);
+        ar.pod(ch2_errors);
+        ar.pod(sort_dma_starts);
+        ar.pod(first_refused.dmaor);
+        ar.pod(first_refused.src);
+        ar.pod(first_refused.dst);
+        ar.pod(first_refused.len);
+        ar.pod(last_refused.dmaor);
+        ar.pod(last_refused.src);
+        ar.pod(last_refused.dst);
+        ar.pod(last_refused.len);
+    }
+
 private:
     void ch2_dma();
     sh4::Dmac& dmac_;

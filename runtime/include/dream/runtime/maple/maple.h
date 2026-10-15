@@ -73,6 +73,8 @@ public:
     // fills `out` with the reply payload (a multiple of 4 bytes).
     virtual Reply handle(std::uint8_t command, const std::uint32_t* args, std::size_t nwords,
                          Payload& out) = 0;
+    // Savestate: a device carries whatever a resumed frame needs to answer the next command.
+    virtual void serialize(state::Archive&) {}
 };
 
 // A host input's travel, 0 to 1 per direction, as the controller's own byte. The pair is one axis:
@@ -113,6 +115,10 @@ public:
     Reply handle(std::uint8_t command, const std::uint32_t* args, std::size_t nwords,
                  Payload& out) override;
     std::uint64_t condition_reads = 0;
+    void serialize(state::Archive& ar) override {
+        ar.raw(&state, sizeof state);
+        ar.pod(condition_reads);
+    }
 };
 
 // A visual memory unit, as far as a game is concerned: 128 KB of flash in 256 blocks of 512
@@ -158,6 +164,15 @@ public:
     const std::vector<std::uint8_t>& image() const noexcept { return flash_; }
     std::uint64_t block_reads = 0, block_writes = 0, media_info_reads = 0, screen_writes = 0;
 
+    void serialize(state::Archive& ar) override {
+        ar.vec(flash_);
+        ar.str(path_);
+        ar.pod(block_reads);
+        ar.pod(block_writes);
+        ar.pod(media_info_reads);
+        ar.pod(screen_writes);
+    }
+
 private:
     std::vector<std::uint8_t> flash_ = std::vector<std::uint8_t>(kImageSize, 0);
     std::string path_;
@@ -190,6 +205,44 @@ public:
                   mdapro = 0x00007F00, mmsel = 1;
     // Diagnostics
     std::uint64_t transfers = 0, frames = 0, no_device = 0;
+
+    void serialize(state::Archive& ar) {
+        ar.pod(mdstar);
+        ar.pod(mdtsel);
+        ar.pod(mden);
+        ar.pod(mdst);
+        ar.pod(msys);
+        ar.pod(mshtcl);
+        ar.pod(mdapro);
+        ar.pod(mmsel);
+        ar.pod(transfers);
+        ar.pod(frames);
+        ar.pod(no_device);
+        ar.pod(frames_by_recipient);
+        ar.pod(frames_by_command);
+        ar.pod(event_);
+        ar.pod(trigger_pending_reset_);
+        // In-flight replies: a resumed run must still deliver them.
+        std::uint64_t n = ar.saving() ? out_.size() : 0;
+        ar.pod(n);
+        if (ar.loading()) {
+            if (ar.failed())
+                return;
+            out_.resize(n);
+        }
+        for (auto& p : out_) {
+            ar.pod(p.addr);
+            ar.vec(p.words);
+        }
+        // The attached devices, by the same type the ring holds.
+        for (auto& port : ports_)
+            if (port)
+                port->serialize(ar);
+        for (auto& slots : expansion_)
+            for (auto& slot : slots)
+                if (slot)
+                    slot->serialize(ar);
+    }
 
 private:
     void start_dma();

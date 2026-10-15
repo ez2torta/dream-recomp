@@ -74,6 +74,21 @@ public:
     std::uint32_t iml4nrm = 0, iml4ext = 0, iml4err = 0;
     std::uint32_t iml6nrm = 0, iml6ext = 0, iml6err = 0;
 
+    void serialize(state::Archive& ar) {
+        ar.pod(istnrm);
+        ar.pod(istext);
+        ar.pod(isterr);
+        ar.pod(iml2nrm);
+        ar.pod(iml2ext);
+        ar.pod(iml2err);
+        ar.pod(iml4nrm);
+        ar.pod(iml4ext);
+        ar.pod(iml4err);
+        ar.pod(iml6nrm);
+        ar.pod(iml6ext);
+        ar.pod(iml6err);
+    }
+
 private:
     void recompute();
     sh4::Intc& cpu_;

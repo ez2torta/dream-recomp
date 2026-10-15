@@ -22,6 +22,11 @@ public:
     std::uint32_t seconds() const noexcept { return seconds_; }
     void tick() noexcept { ++seconds_; }
 
+    void serialize(state::Archive& ar) {
+        ar.pod(seconds_);
+        ar.pod(enable_);
+    }
+
     std::uint32_t read(std::uint32_t addr, unsigned) override {
         switch (addr & 0xFFu) {
             case kSecondsHi:

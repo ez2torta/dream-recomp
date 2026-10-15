@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "dream/runtime/memory.h"
+#include "dream/runtime/state/archive.h"
 
 namespace dream::mem {
 
@@ -50,6 +51,9 @@ public:
         }
     }
     std::uint32_t& word(std::uint32_t offset) { return regs_[offset >> 2]; }
+
+    // Savestate: only the stored words; the base is construction, not state.
+    void serialize(state::Archive& ar) { ar.vec(regs_); }
 
 private:
     std::uint32_t base_;
@@ -213,6 +217,26 @@ public:
 
     // The 32-bit VRAM view interleaves the two 4 MB banks word by word onto the 64-bit view.
     static std::uint32_t vram_map32(std::uint32_t offset32) noexcept;
+
+    // Savestate. Every flat block plus the small on-chip state; the boot ROM is reloaded from the
+    // same file and the store-queue control and CCN words are carried because a title can be
+    // mid-flush. The cumulative write hash travels with the memories so a resumed run's hash lines
+    // are directly comparable to a walk that never stopped.
+    void serialize(state::Archive& ar) {
+        ar.raw(ram(), kRamSize);
+        ar.raw(vram(), kVramSize);
+        ar.raw(aram(), kAramSize);
+        ar.raw(flash(), kFlashSize);
+        ar.raw(ocram_.get(), kOcramSize);
+        ar.pod(sq_);
+        ar.pod(qacr_);
+        ar.pod(ccn_);
+        ar.pod(tra);
+        ar.pod(expevt);
+        ar.pod(intevt);
+        ar.pod(write_hash);
+        ar.pod(writes_hashed);
+    }
 
 private:
     struct Target {

@@ -48,6 +48,19 @@ public:
     unsigned current_list = 7;          // 7: none open
     std::vector<std::uint32_t> stream;  // raw parameter words since the last list init
 
+    void serialize(state::Archive& ar) {
+        ar.raw(&lists, sizeof lists);
+        ar.pod(chunks);
+        ar.pod(invalid);
+        ar.pod(current_list);
+        ar.vec(stream);
+        int st = static_cast<int>(state_);
+        ar.pod(st);
+        if (ar.loading())
+            state_ = static_cast<State>(st);
+        ar.pod(pending_v64_);
+    }
+
     // Sizes from the parameter control word (Flycast TaTypeLut): a 64-byte polygon header is an
     // intensity-coloured textured polygon with offset colour, or an intensity two-volume polygon;
     // 64-byte vertices are textured floating-colour or textured two-volume ones.
@@ -99,6 +112,26 @@ public:
                   list_inits = 0;
     // Render time model: fixed cost plus per parameter word.
     std::uint64_t render_base_cycles = 200'000, render_cycles_per_word = 4;
+
+    void serialize(state::Archive& ar) {
+        ta.serialize(ar);
+        ar.pod(regs_);
+        ar.pod(fifo_buf_);
+        ar.pod(fifo_fill_);
+        ar.pod(render_event_);
+        ar.pod(seen_ta_data_);
+        ar.pod(yuv_mb_);
+        ar.pod(yuv_fill_);
+        ar.pod(yuv_index_);
+        ar.pod(renders);
+        ar.pod(renders_done);
+        ar.pod(frame_swaps);
+        ar.pod(yuv_words);
+        ar.pod(texture_words);
+        ar.pod(list_inits);
+        ar.pod(render_base_cycles);
+        ar.pod(render_cycles_per_word);
+    }
 
 private:
     void start_render();

@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "dream/runtime/state/archive.h"
+
 namespace dream::sched {
 
 constexpr std::uint64_t kSh4Clock = 200'000'000;
@@ -38,6 +40,21 @@ public:
     void advance_to(std::uint64_t target);
     void advance(std::uint64_t cycles) { advance_to(now_ + cycles); }
     const std::string& name(int id) const { return events_[static_cast<std::size_t>(id)].name; }
+
+    // Savestate: the clock and one deadline per event, indexed by id. The callbacks are host
+    // closures and are not stored; a load must rebuild the same events in the same order, so the
+    // count is asserted and a mismatch is a refusal, not a silent misalignment.
+    void serialize(state::Archive& ar) {
+        ar.pod(now_);
+        std::uint64_t count = ar.saving() ? events_.size() : 0;
+        ar.pod(count);
+        if (ar.loading() && count != events_.size()) {
+            ar.fail();
+            return;
+        }
+        for (auto& e : events_)
+            ar.pod(e.deadline);
+    }
 
 private:
     struct Event {

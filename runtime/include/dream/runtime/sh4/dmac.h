@@ -45,6 +45,17 @@ public:
     std::function<void(unsigned ch)> on_transfer_end;
     std::uint64_t manual_transfers = 0;
 
+    void serialize(state::Archive& ar) {
+        ar.pod(dmaor_);
+        ar.pod(manual_transfers);
+        for (auto& c : ch_) {
+            ar.pod(c.sar);
+            ar.pod(c.dar);
+            ar.pod(c.tcr);
+            ar.pod(c.chcr);
+        }
+    }
+
 private:
     void manual_dma(unsigned ch);
     struct Channel {

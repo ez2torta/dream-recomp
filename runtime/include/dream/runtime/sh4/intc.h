@@ -56,6 +56,14 @@ public:
     void write(std::uint32_t addr, std::uint32_t value, unsigned size) override;
     std::uint16_t ipra = 0, iprb = 0, iprc = 0, icr = 0;
 
+    void serialize(state::Archive& ar) {
+        ar.pod(ipra);
+        ar.pod(iprb);
+        ar.pod(iprc);
+        ar.pod(icr);
+        ar.pod(pending_);
+    }
+
 private:
     std::uint32_t pending_ = 0;
 };

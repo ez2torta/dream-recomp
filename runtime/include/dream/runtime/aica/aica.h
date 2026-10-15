@@ -68,6 +68,27 @@ public:
                   dsp_writes = 0, internal_dma_requests = 0, scpu_to_arm = 0, scpu_to_sh4 = 0,
                   arm_side_reg_writes = 0, sh4_side_reg_writes = 0;
 
+    void serialize(state::Archive& ar) {
+        ar.pod(regs_);
+        ar.pod(timer_step_);
+        ar.pod(timer_left_);
+        ar.pod(event_);
+        arm.serialize(ar);
+        mixer.serialize(ar);
+        ar.pod(last_left);
+        ar.pod(last_right);
+        ar.pod(samples);
+        ar.pod(timer_irqs);
+        ar.pod(sh4_irq_raises);
+        ar.pod(channel_writes);
+        ar.pod(dsp_writes);
+        ar.pod(internal_dma_requests);
+        ar.pod(scpu_to_arm);
+        ar.pod(scpu_to_sh4);
+        ar.pod(arm_side_reg_writes);
+        ar.pod(sh4_side_reg_writes);
+    }
+
 private:
     std::uint32_t reg_read(std::uint32_t offset, unsigned size);
     void reg_write(std::uint32_t offset, std::uint32_t value, unsigned size);

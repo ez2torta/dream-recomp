@@ -14,6 +14,8 @@
 #include <cstdint>
 #include <functional>
 
+#include "dream/runtime/state/archive.h"
+
 namespace dream::aica {
 
 class Mixer {
@@ -23,6 +25,11 @@ public:
     Mixer(const Mixer&) = delete;
     Mixer& operator=(const Mixer&) = delete;
     void reset();
+
+    // Savestate. The 64 channels are a flat record of integers plus pointers into the register
+    // image, the DSP mix bus and the LFO tables; the pointers are re-derived on load. Defined in
+    // mixer.cpp where Channel is complete.
+    void serialize(state::Archive& ar);
 
     // A write landed in channel `channel`'s 0x80-byte slot at byte offset `reg` (size 1 or 2).
     void channel_reg_written(unsigned channel, unsigned reg, unsigned size);
