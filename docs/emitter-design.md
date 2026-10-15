@@ -170,7 +170,10 @@ The contract, all in `runtime/include/dream/runtime/sh4/abi.h`:
   label) or hands the address to `Hooks::on_resume` (the dev interpreter, with no return address
   to stop at). It ends when control returns to the PR it started with.
 - Poll points set `c.pc` to their exact address before `deliver_irq`, so an SPC saved there is
-  resumable. An `rte` whose SPC/r15 differ from the interrupted frame's is a task switch: the
+  resumable. The function-entry poll resumes at `resume_pc` when the body was entered by a resume:
+  the entry address is only the exact pc of a normal entry, and saving it for an interrupt taken
+  while re-entering a loop would make the handler's `rte` restart the whole function from its top
+  with the suspended context's registers. An `rte` whose SPC/r15 differ from the interrupted frame's is a task switch: the
   runtime throws `NonLocalReturn(SPC)` from inside `rte()`, dropping the handler's and the
   suspended task's host frames. An `rte` with no delivery frame is a jump and goes the same way.
 
