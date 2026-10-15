@@ -2316,6 +2316,10 @@ int main(int argc, char** argv) {
         stop = "fault";
         std::fprintf(stderr, "fault: %s (hooks at fault: %p, system: %p)\n", e.what(),
                      static_cast<void*>(dream::sh4::hooks()), static_cast<void*>(&sys));
+        for (unsigned i = 0; i < 16; i += 4)
+            std::fprintf(stderr, "  r%-2u %08x  r%-2u %08x  r%-2u %08x  r%-2u %08x\n", i,
+                         sys.ctx.r[i], i + 1, sys.ctx.r[i + 1], i + 2, sys.ctx.r[i + 2], i + 3,
+                         sys.ctx.r[i + 3]);
         rc = 1;
     }
     const double host_s =
