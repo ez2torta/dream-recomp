@@ -927,9 +927,12 @@ std::string report_text(dream::System& sys, dream::hle::Bios& bios, const dream:
             // Matching the image at the address it already lives at is the code matching itself,
             // not a copy of it. Saying "relocation source = X, dest = X" invites an entry that
             // describes a move that never happened; what this address actually wants is a
-            // [functions] extra seed, which suggest_entries writes.
+            // [functions] extra seed, which suggest_entries writes. Compare in link space: a
+            // target reached through a RAM pointer (0x8Cxxxxxx) is the same code as its image
+            // address (0x0Cxxxxxx), and only a genuine low-RAM copy is a different place.
             const auto found_at = static_cast<std::uint32_t>(image_base + best_off);
-            if (found_at == rec.addr)
+            const std::uint32_t link = phys | 0x0C000000u;
+            if (found_at == link)
                 std::snprintf(buf, sizeof buf,
                               "  0x%08x: in the image, %zu bytes of it, but discovery never "
                               "reached it (add to [functions] extra)\n",
