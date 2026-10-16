@@ -1122,9 +1122,12 @@ void usage(const char* argv0, std::FILE* out) {
         "  --record-input FILE    write every change of the pad to FILE, one line per change, so a\n"
         "                         session played by hand can be repeated exactly\n"
         "  --play-input FILE      replay a recording. Use the same --rtc-seed as when it was made\n"
-        "  --scenario FILE        run a title-specific Training scenario with relative actions/captures\n"
+        "  --scenario FILE        run a title-specific scenario (Training or VS MODE) with relative\n"
+        "                         actions/captures\n"
         "  --press B@F[,B@F...]   hold a button for 8 frames from frame F (a b c x y z start\n"
         "                         up down left right), to get past screens that wait for input\n"
+        "  --press2 B@F[,B@F...]  the same for the controller in port B. The port is left empty\n"
+        "                         unless this is used, so a title never sees a pad it did not ask for\n"
         "\n"
         "Fast start (docs/training-fast-start-plan.md):\n"
         "  --save-state FILE      write a machine snapshot at the next guest interrupt poll once\n"
@@ -1223,7 +1226,7 @@ int main(int argc, char** argv) {
     // --press BUTTON@FRAME[,BUTTON@FRAME...]: hold a controller button for 8 frames from that
     // frame, so a headless run can get past "press start" screens. Names: a b c x y z start up
     // down left right.
-    std::string presses;
+    std::string presses, presses2;
     std::string record_input, play_input, scenario_file;
     // --window: open a window and play. Without it the run is headless exactly as before.
     // --scale N draws the geometry at N times the guest's resolution; the frame is resampled back
@@ -1333,6 +1336,8 @@ int main(int argc, char** argv) {
             dump_ta_at_frame = std::strtoull(argv[++i], nullptr, 0);
         else if (!std::strcmp(argv[i], "--press") && i + 1 < argc)
             presses = argv[++i];
+        else if (!std::strcmp(argv[i], "--press2") && i + 1 < argc)
+            presses2 = argv[++i];
         else if (!std::strcmp(argv[i], "--record-input") && i + 1 < argc)
             record_input = argv[++i];
         else if (!std::strcmp(argv[i], "--play-input") && i + 1 < argc)
@@ -1422,8 +1427,8 @@ int main(int argc, char** argv) {
     std::unique_ptr<cvs1j::ScenarioDriver> scenario;
     if (!scenario_file.empty()) {
         cvs1j::Scenario spec;
-        if (cfg.id != "cvs1j" || !play_input.empty() || !presses.empty() || interpret_all) {
-            std::fprintf(stderr, "--scenario requires CVS1J and cannot combine with --play-input, --press or --interpret\n");
+        if (cfg.id != "cvs1j" || !play_input.empty() || !presses.empty() || !presses2.empty() || interpret_all) {
+            std::fprintf(stderr, "--scenario requires CVS1J and cannot combine with --play-input, --press, --press2 or --interpret\n");
             return 2;
         }
         if (!spec.load(scenario_file, err)) {
@@ -1698,9 +1703,9 @@ int main(int argc, char** argv) {
     }
     maple.attach(0, std::move(pad));
     sys.memory.map_mmio(dream::maple::Bus::kBase, dream::maple::Bus::kEnd, &maple);
-    // Scripted controller presses (--press start@120,a@300): each is held for 8 frames.
-    std::vector<std::pair<std::uint64_t, std::uint16_t>> scripted;
-    {
+    // Scripted controller presses (--press start@120,a@300): each is held for 8 frames. --press2
+    // says the same for port B, which is where a two-player title looks for the second pad.
+    auto parse_presses = [](const std::string& spec) {
         static const struct {
             const char* name;
             std::uint16_t bit;
@@ -1710,7 +1715,8 @@ int main(int argc, char** argv) {
                       {"left", dream::maple::kLeft}, {"right", dream::maple::kRight},
                       {"z", dream::maple::kZ},       {"y", dream::maple::kY},
                       {"x", dream::maple::kX}};
-        std::string rest = presses;
+        std::vector<std::pair<std::uint64_t, std::uint16_t>> out;
+        std::string rest = spec;
         while (!rest.empty()) {
             const std::size_t comma = rest.find(',');
             std::string one = rest.substr(0, comma);
@@ -1722,8 +1728,24 @@ int main(int argc, char** argv) {
             const std::uint64_t frame = std::strtoull(one.c_str() + at + 1, nullptr, 0);
             for (const auto& n : kNames)
                 if (name == n.name)
-                    scripted.push_back({frame, n.bit});
+                    out.push_back({frame, n.bit});
         }
+        return out;
+    };
+    const std::vector<std::pair<std::uint64_t, std::uint16_t>> scripted = parse_presses(presses);
+    const std::vector<std::pair<std::uint64_t, std::uint16_t>> scripted2 = parse_presses(presses2);
+    // The second controller only exists while something needs to press it. A title that counts the
+    // devices on the bus would otherwise see a pad nobody asked for, and behave differently.
+#ifdef DREAM_CVS1J_SCENARIO
+    const bool scenario_wants_second_pad = scenario && scenario->wants_second_pad();
+#else
+    const bool scenario_wants_second_pad = false;
+#endif
+    dream::maple::Controller* pad2_ptr = nullptr;
+    if (!scripted2.empty() || scenario_wants_second_pad) {
+        auto pad2 = std::make_unique<dream::maple::Controller>();
+        pad2_ptr = pad2.get();
+        maple.attach(1, std::move(pad2));
     }
     // --play-input: the recording, one line per change of the pad: frame buttons rt lt jx jy j2x j2y.
     struct InputEvent {
@@ -1781,9 +1803,18 @@ int main(int argc, char** argv) {
                     held |= bit;
             pad_ptr->state.buttons = static_cast<std::uint16_t>(0xFFFFu & ~held);
         }
+        if (pad2_ptr && !scripted2.empty()) {
+            const std::uint64_t f = sys.spg.frames();
+            std::uint16_t held = 0;
+            for (const auto& [start, bit] : scripted2)
+                if (f >= start && f < start + 8)
+                    held |= bit;
+            pad2_ptr->state.buttons = static_cast<std::uint16_t>(0xFFFFu & ~held);
+        }
 #ifdef DREAM_CVS1J_SCENARIO
         if (scenario) {
             pad_ptr->state = scenario->tick(sys.memory.ram(), sys.spg.frames());
+            if (pad2_ptr) pad2_ptr->state = scenario->player2();
             if (scenario->ready() && scenario->spec().interactive) {
                 pad_ptr->state.buttons &= scenario_manual.buttons;
                 pad_ptr->state.ltrigger = std::max(pad_ptr->state.ltrigger, scenario_manual.ltrigger);
