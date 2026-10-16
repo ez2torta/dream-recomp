@@ -226,7 +226,9 @@ public:
         std::uint64_t n = ar.saving() ? out_.size() : 0;
         ar.pod(n);
         if (ar.loading()) {
-            if (ar.failed())
+            // Each entry costs at least its word address and its word count. A count the payload
+            // cannot hold means this state is not from this build: refuse it rather than resize.
+            if (!ar.reserve(n, 12))
                 return;
             out_.resize(n);
         }

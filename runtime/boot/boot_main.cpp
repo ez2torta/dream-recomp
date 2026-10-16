@@ -1434,6 +1434,9 @@ int main(int argc, char** argv) {
         if (!spec.load(scenario_file, err)) {
             std::fprintf(stderr, "scenario: %s\n", err.c_str()); return 2;
         }
+        // A snapshot is where the scenario starts from: the menu walk it would have driven has
+        // already happened, so the adapter is told to expect the fight instead of driving to it.
+        spec.resumed = !load_state.empty();
         if (rtc_seed_set && rtc_seed != spec.seed) {
             std::fprintf(stderr, "scenario: --rtc-seed conflicts with scenario seed\n"); return 2;
         }
@@ -2269,8 +2272,14 @@ int main(int argc, char** argv) {
             return 2;
         }
         serialize_machine(ar);
-        if (ar.failed()) {
-            std::fprintf(stderr, "state: %s does not match this build\n", load_state.c_str());
+        if (ar.failed() || ar.cursor() != ar.buffer().size()) {
+            // A state pins the executable: the same devices in the same order, each writing the same
+            // fields in the same order. A mismatch anywhere desynchronises the stream, so the whole
+            // payload must be consumed for the resume to mean anything. This catches a state from a
+            // different build even when the key matches (the key is the caller's word for it, not
+            // proof), and it is why a stale file is refused rather than resumed half-applied.
+            std::fprintf(stderr, "state: %s does not match this build (%zu of %zu bytes read)\n",
+                         load_state.c_str(), ar.cursor(), ar.buffer().size());
             return 2;
         }
         std::printf("state: loaded %s: frame %llu, pc 0x%08x\n", load_state.c_str(),

@@ -63,6 +63,27 @@ public:
         cursor_ += n;
     }
 
+    // A count read back from the stream is only believed when the payload can actually hold that
+    // many bytes. A state that does not match this build -- a device added since it was written, a
+    // field inserted into one -- desynchronises the stream and the next count read is garbage;
+    // resizing to garbage is how a stale file used to abort the process from inside a device
+    // instead of being refused. Grow nothing until the bytes are known to be there. Load-side only
+    // (saving writes what it owns), and `element` is the smallest size one element can have, which
+    // keeps the multiplication from overflowing.
+    bool reserve(std::uint64_t n, std::size_t element = 1) {
+        if (failed_)
+            return false;
+        if (saving())
+            return true;
+        if (element == 0)
+            element = 1;
+        if (n > (buffer_.size() - cursor_) / element) {
+            failed_ = true;
+            return false;
+        }
+        return true;
+    }
+
     void str(std::string& s) {
         if (saving()) {
             std::uint64_t n = s.size();
@@ -73,7 +94,7 @@ public:
         }
         std::uint64_t n = 0;
         raw(&n, sizeof n);
-        if (failed_)
+        if (!reserve(n))
             return;
         s.resize(n);
         if (n)
@@ -91,7 +112,7 @@ public:
         }
         std::uint64_t n = 0;
         raw(&n, sizeof n);
-        if (failed_)
+        if (!reserve(n, sizeof(T)))
             return;
         v.resize(n);
         if (n)
