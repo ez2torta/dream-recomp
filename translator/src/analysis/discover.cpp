@@ -392,7 +392,15 @@ private:
             const Instr ins = at(pc);
             if (ins.op == Op::Invalid)
                 return false;
-            if (ins.op == Op::RTS || ins.op == Op::BRA || ins.op == Op::JMP || ins.op == Op::RTE)
+            // BRAF ends the straight-line walk as surely as BRA: an unconditional computed jump,
+            // with no fall-through and no return. Omitting it ran the scan on past the jump, into
+            // the literal pool that follows, where an undefined word rejected the candidate -- so
+            // every function whose body ends in `mova table,r0 / mov.w @(r0,rN),r0 / braf r0`, the
+            // jump-table dispatch idiom, was invisible to pointer_pass. CvS hangs 99 such handlers
+            // off one table at 0x0C1CD068 and discovery found 95: the four it missed sit in gaps
+            // that nothing but the table refers to.
+            if (ins.op == Op::RTS || ins.op == Op::BRA || ins.op == Op::BRAF || ins.op == Op::JMP ||
+                ins.op == Op::RTE)
                 return true;
         }
         return false;

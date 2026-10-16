@@ -2,6 +2,7 @@ add_executable(dream_translator_tests
   test_main.cpp
   test_decoder.cpp
   test_config.cpp
+  test_discover.cpp
   test_symbols.cpp
 )
 target_include_directories(dream_translator_tests SYSTEM PRIVATE ${DREAM_ROOT}/third_party/doctest)
